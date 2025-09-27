@@ -1,0 +1,74 @@
+pragma language_version >= 0.16 && <= 0.17;
+
+import CompactStandardLibrary;
+
+export struct Mandate {
+  creator: Bytes<32>,
+  rewardPerUpdate: Uint<64>,
+  modelCommitment: Bytes<32>,
+  criteriaCommitment: Bytes<32>
+}
+
+struct PatientRecord {
+  age: Uint<8>,
+  diagnosisCode: Uint<16>
+}
+
+struct TextSnippet {
+  sourceType: Uint<8>,
+  containsKeyword: Boolean
+}
+
+export ledger custodians: HistoricMerkleTree<10, Bytes<32>>;
+export ledger mandates: Map<Uint<64>, Mandate>;
+export ledger mandateSequence: Counter;
+export ledger submittedUpdates: Set<Bytes<32>>;
+
+witness get_custodian_secret(): Bytes<32>;
+witness get_merkle_path(commitment: Bytes<32>): MerkleTreePath<10, Bytes<32>>;
+witness get_private_medical_batch(): Vector<5, PatientRecord>;
+witness get_private_text_batch(): Vector<5, TextSnippet>;
+
+export circuit register_custodian(commitment: Bytes<32>): [] {
+  custodians.insert(disclose(commitment));
+}
+
+export circuit create_mandate(
+  creator: Bytes<32>,
+  reward: Uint<64>,
+  modelCommitment: Bytes<32>,
+  criteriaCommitment: Bytes<32>
+): Uint<64> {
+  const mandateId = mandateSequence as Uint<64>;
+  const newMandate = Mandate {
+    creator: creator,
+    rewardPerUpdate: reward,
+    modelCommitment: modelCommitment,
+    criteriaCommitment: criteriaCommitment
+  };
+  mandates.insert(disclose(mandateId), disclose(newMandate));
+  mandateSequence.increment(1);
+  return mandateId;
+}
+
+export circuit submit_medical_update(
+  mandateId: Uint<64>,
+  dataCommitment: Bytes<32>
+): [] {
+  const secret = get_custodian_secret();
+  const selfCommitment = persistentHash<Bytes<32>>(secret);
+  const path = get_merkle_path(selfCommitment);
+  assert(custodians.checkRoot(disclose(merkleTreePathRoot<10, Bytes<32>>(path))), "Error: Not a registered custodian.");
+
+  const mandate = mandates.lookup(disclose(mandateId));
+  const privateData = get_private_medical_batch();
+
+  for (const record of privateData) {
+    assert(record.age >= 18, "Data error: Patient must be an adult.");
+  }
+
+  const nullifier = persistentHash<Vector<2, Bytes<32>>>([secret, dataCommitment]);
+  assert(!submittedUpdates.member(disclose(nullifier)), "Error: This data batch has already been submitted.");
+
+  submittedUpdates.insert(disclose(nullifier));
+}
